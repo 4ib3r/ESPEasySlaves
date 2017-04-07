@@ -1,3 +1,5 @@
+#include <TimerOne.h>
+
 /****************************************************************************************************************************\
  * Arduino project "ESP Easy" � Copyright www.esp8266.nu
  *
@@ -22,8 +24,11 @@
 // It best to run the Pro Mini on 3V3, although the 16MHz versions do not officially support this voltage level on this frequency.
 // That way, you can skip levelconverters on I2C.
 // Arduino Mini Pro uses A4 and A5 for I2C bus. ESP I2C can be configured but they are on GPIO-4 and GPIO-5 by default.
-
+#include <avr/sleep.h>
+#include <avr/wdt.h>
+#include <avr/power.h>
 #include <Wire.h>
+#include <EEPROM.h>
 
 #define I2C_MSG_IN_SIZE    4
 #define I2C_MSG_OUT_SIZE   4
@@ -32,11 +37,29 @@
 #define CMD_DIGITAL_READ   2
 #define CMD_ANALOG_WRITE   3
 #define CMD_ANALOG_READ    4
+#define CMD_SLEEP_WRITE    5
 
 volatile uint8_t sendBuffer[I2C_MSG_OUT_SIZE];
+uint8_t _time = 0;
+byte sleepPin = 13;
+uint16_t valueRead;
+
+ISR(WDT_vect)
+{
+  wdt_disable();
+}
+
 
 void setup()
 {
+  Serial.begin(115200);
+  Serial.println("Hello");
+  Serial.flush();
+  sleepPin = EEPROM.read(0);
+  if (sleepPin > 0) {
+    pinMode(sleepPin, OUTPUT);
+    digitalWrite(sleepPin, HIGH);
+  }
   Wire.begin(0x7f);
   Wire.onReceive(receiveEvent);
   Wire.onRequest(requestEvent);
@@ -52,6 +75,12 @@ void receiveEvent(int count)
     byte port = Wire.read();
     int value = Wire.read();
     value += Wire.read()*256;
+    Serial.print(F("CMD: "));
+    Serial.print(cmd);
+    Serial.print(F(" - "));
+    Serial.print(port);
+    Serial.print(F(": "));
+    Serial.println(value);
     switch(cmd)
       {
         case CMD_DIGITAL_WRITE:
@@ -68,9 +97,18 @@ void receiveEvent(int count)
           break;
         case CMD_ANALOG_READ:
           clearSendBuffer();
-          int valueRead = analogRead(port);
+          valueRead = analogRead(port);
           sendBuffer[0] = valueRead & 0xff;
           sendBuffer[1] = valueRead >> 8;
+          break;
+        case CMD_SLEEP_WRITE:
+          sleepPin = port;
+          pinMode(sleepPin, OUTPUT);
+          if (EEPROM.read(0) != sleepPin) {
+            EEPROM.put(0, sleepPin);
+          }
+          digitalWrite(sleepPin, HIGH);
+          sleep(value);
           break;
       }
   }
@@ -87,3 +125,30 @@ void requestEvent()
   Wire.write((const uint8_t*)sendBuffer,sizeof(sendBuffer));
 }
 
+void sleep(uint8_t time)
+{
+  Serial.print("Go to sleep for");
+  Serial.print(time);
+  Serial.flush();
+  _time = time;
+  pinMode(13, LOW);
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  wdt_enable(WDTO_1S);
+  sleep_enable();
+  WDTCSR |= (1<<WDIE);
+  Serial.println("Sleep down");
+  Serial.flush();
+  sleep_mode();
+  sleep_disable();
+  power_all_enable();
+  Serial.println("Waked up");
+  Serial.flush();
+  pinMode(13, HIGH);
+  if(--_time > 0) {
+    sleep(_time);
+  } else {
+    digitalWrite(sleepPin, LOW);
+    delay(10);
+    digitalWrite(sleepPin, HIGH);
+  }
+}
